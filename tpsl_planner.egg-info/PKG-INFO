@@ -1,0 +1,32 @@
+Metadata-Version: 2.4
+Name: tpsl-planner
+Version: 1.0.0
+Summary: Open-core TP-SL trade planning foundation with plugin hooks
+Author: Cless Lee
+License: MIT
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: PyQt5
+Requires-Dist: python-dotenv
+Requires-Dist: pandas
+Requires-Dist: numpy
+Requires-Dist: matplotlib
+Requires-Dist: requests
+Dynamic: license-file
+
+# TP-SL Planner (Open Core)
+
+This package is a reorganized version of your TP-SL Planner with a modular,
+plugin-friendly structure. Run with:
+
+```bash
+python -m tpsl_planner
+```
+
+or install in editable mode and run:
+
+```bash
+pip install -e .
+tpsl-planner
+```

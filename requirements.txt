@@ -1,0 +1,31 @@
+altgraph==0.17.4
+certifi==2025.11.12
+charset-normalizer==3.4.4
+contourpy==1.3.3
+cycler==0.12.1
+fonttools==4.60.1
+idna==3.11
+kiwisolver==1.4.9
+matplotlib==3.10.7
+numpy==2.3.4
+packaging==25.0
+pandas==2.3.3
+pefile==2023.2.7
+pillow==12.0.0
+pyinstaller==6.16.0
+pyinstaller-hooks-contrib==2025.9
+pyparsing==3.2.5
+PyQt5==5.15.11
+PyQt5-Qt5==5.15.2
+PyQt5_sip==12.17.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.1
+pytz==2025.2
+pywin32-ctypes==0.2.3
+requests==2.32.5
+setuptools==80.9.0
+six==1.17.0
+# Editable install with no version control (tpsl-planner==1.0.0)
+-e d:\projects\tpsl_open core
+tzdata==2025.2
+urllib3==2.5.0

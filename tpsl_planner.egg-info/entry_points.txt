@@ -1,0 +1,2 @@
+[console_scripts]
+tpsl-planner = tpsl_planner.app.run:main

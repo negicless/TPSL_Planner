@@ -1,0 +1,19 @@
+[project]
+name = "tpsl-planner"
+version = "1.0.0"
+description = "Open-core TP-SL trade planning foundation with plugin hooks"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name="Cless Lee" }]
+license = { text = "MIT" }
+dependencies = [
+    "PyQt5",
+    "python-dotenv",
+    "pandas",
+    "numpy",
+    "matplotlib",
+    "requests",
+]
+
+[project.scripts]
+tpsl-planner = "tpsl_planner.app.run:main"

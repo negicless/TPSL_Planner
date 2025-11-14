@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# Build
+dist/
+build/
+*.spec
+
+# Env / secrets
+.env
+*.env
+
+# Runtime data
+tpsl_planner/data/ticker_cache.json
