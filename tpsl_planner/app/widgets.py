@@ -1247,7 +1247,8 @@ class TPSLWidget(QWidget):
             note_txt = (self.txt_note.toPlainText() or "").strip()
             if note_txt:
                 lines.append("")
-                lines.append(_MD_I18N[lang]["note_line"].format(note=note_txt))
+                note_tpl = _MD_I18N[lang].get("note_line") or "{note}"
+                lines.append(note_tpl.format(note=note_txt))
             
 
             self._last_report = "\n".join(lines)

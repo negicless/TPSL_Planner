@@ -8,21 +8,27 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, replace
+from typing import List, Optional, Tuple, Literal
 import math
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 import re
 from decimal import Decimal, ROUND_HALF_UP
+from tpsl_planner.core.price import load_ohlc_for_levels
+
 __all__ = [
     "LevelsConfig",
     "LevelRow",
+    "Level",
     "compute_levels_sheet",
     "render_levels_sheet_img",
     "compute_and_render",
     "as_markdown_table",
+    "pull_levels_for_ticker",
 ]
+
+LevelType = Literal["support", "resistance", "pivot", "gap", "other"]
 
 
 def _is_jp_ticker(code: str, yf_symbol: str | None = None) -> bool:
@@ -30,6 +36,7 @@ def _is_jp_ticker(code: str, yf_symbol: str | None = None) -> bool:
     if yf_symbol and yf_symbol.upper().endswith(".T"):
         return True
     return bool(re.fullmatch(r"\d{3,4}[A-Z]?", str(code)))
+
 
 def _fmt_yen(x) -> str:
     """Round and format as whole yen (no decimals)."""
@@ -40,14 +47,17 @@ def _fmt_yen(x) -> str:
     except Exception:
         return str(int(round(float(x))))
 
+
 def _fmt_float(x) -> str:
     """Standard float with two decimals for non-JP tickers."""
     if x is None or x != x:
         return "-"
     return f"{x:.2f}"
 
+
 def _fmt_range(lo, hi, fmtfunc):
     return f"{fmtfunc(lo)} – {fmtfunc(hi)}"
+
 
 def _fmt_list(values, fmtfunc):
     return ", ".join(fmtfunc(v) for v in values if v is not None)
@@ -56,6 +66,7 @@ def _fmt_list(values, fmtfunc):
 # --------------------------------------------------------------------------- #
 #                                  CONFIG                                     #
 # --------------------------------------------------------------------------- #
+
 
 @dataclass
 class LevelsConfig:
@@ -69,12 +80,14 @@ class LevelsConfig:
     smooth_bars_W: int = 3
     smooth_bars_D: int = 2
     smooth_bars_H4: int = 2
+    smooth_bars_H1: int = 2
     smooth_bars_M30: int = 1
 
     # Per-TF computation mode: "current" | "body" | "auto" | ("donchian" for 4H)
     range_mode_W: str = "auto"
     range_mode_D: str = "auto"
     range_mode_H4: str = "auto"
+    range_mode_H1: str = "auto" 
     range_mode_M30: str = "auto"
     expansion_mult: float = 1.5
 
@@ -110,33 +123,99 @@ class LevelsConfig:
 
 
 # --------------------------------------------------------------------------- #
+#                           UI-FRIENDLY LEVEL OBJECT                          #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class Level:
+    """
+    Compact, UI-friendly level for the Pull Levels window.
+
+    timeframe : "W", "W-1", "D", "4H", "30m", etc.
+    price     : numeric level
+    kind      : "support" | "resistance" | "pivot" | ...
+    label     : human-readable label ("W bottom", "D prev high #1", ...)
+    score     : 0.0–1.0 heuristic strength score (used for sorting / display)
+    meta      : optional extra info (source, indices, etc.)
+    """
+    timeframe: str
+    price: float
+    kind: LevelType
+    label: str = ""
+    score: float = 0.0
+    meta: dict | None = None
+
+
+# --------------------------------------------------------------------------- #
 #                                   UTILS                                     #
 # --------------------------------------------------------------------------- #
+
 
 def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize to o/h/l/c/v and ensure sorted DatetimeIndex."""
     if not isinstance(df, pd.DataFrame):
         raise ValueError("df must be a pandas DataFrame")
 
+    # If yfinance ever gives a MultiIndex (e.g. multiple tickers), flatten it.
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.copy()
+        df.columns = [
+            "_".join(str(p) for p in tup if p not in (None, ""))
+            for tup in df.columns
+        ]
+
+    # Ensure column names are strings
+    cols = [str(c) for c in df.columns]
+
     colmap = {
         "open": "o", "high": "h", "low": "l", "close": "c", "volume": "v",
         "o": "o", "h": "h", "l": "l", "c": "c", "v": "v",
+        "date": "date", "datetime": "date", "timestamp": "date", "time": "date",
         "Date": "date", "Datetime": "date", "timestamp": "date", "time": "date",
     }
-    df = df.rename(columns={c: colmap.get(c, colmap.get(c.lower(), c)) for c in df.columns})
 
+    rename_dict: dict[str, str] = {}
+    for c in cols:
+        c_lower = c.lower()
+
+        # Handle suffixed columns like "open_7203.t" → use prefix before "_"
+        base = c_lower.split("_", 1)[0]
+
+        new = (
+            colmap.get(c)              # exact
+            or colmap.get(c_lower)     # lowercase exact
+            or colmap.get(base, c)     # prefix before "_" (open_7203.T → open)
+        )
+        rename_dict[c] = new
+
+    df = df.rename(columns=rename_dict)
+
+    # Now enforce o/h/l/c presence
     for k in ["o", "h", "l", "c"]:
         if k not in df.columns:
-            raise ValueError(f"Missing column {k}")
+            raise ValueError(
+                f"Missing column {k} after normalization. "
+                f"Got columns: {list(df.columns)}"
+            )
+
     if "v" not in df.columns:
         df["v"] = 0.0
 
+    # make numeric
     for k in ["o", "h", "l", "c", "v"]:
         df[k] = pd.to_numeric(df[k], errors="coerce")
 
+    # ---- index → DatetimeIndex ----
     if not isinstance(df.index, pd.DatetimeIndex):
-        date_col = next((c for c in ["date", "datetime", "dt", "timestamp", "time"] if c in df.columns), None)
-        dt = pd.to_datetime(df[date_col], errors="coerce") if date_col else pd.to_datetime(df.index, errors="coerce")
+        date_col = next(
+            (c for c in ["date", "datetime", "dt", "timestamp", "time"] if c in df.columns),
+            None,
+        )
+        if date_col is not None:
+            dt = pd.to_datetime(df[date_col], errors="coerce")
+        else:
+            dt = pd.to_datetime(df.index, errors="coerce")
     else:
         dt = df.index
 
@@ -151,15 +230,81 @@ def _ensure_ohlc(df: pd.DataFrame) -> pd.DataFrame:
     except Exception:
         pass
     df.index = dt
+
     return df.sort_index().dropna(subset=["o", "h", "l", "c"])
 
 
+    rename_dict = {}
+    for c in cols:
+        c_lower = c.lower()
+        # first try exact key, then lowercase key, else keep original
+        new = colmap.get(c, colmap.get(c_lower, c))
+        rename_dict[c] = new
+
+    df = df.rename(columns=rename_dict)
+
+    # Now enforce o/h/l/c presence
+    for k in ["o", "h", "l", "c"]:
+        if k not in df.columns:
+            raise ValueError(f"Missing column {k} after normalization. Got columns: {list(df.columns)}")
+
+    if "v" not in df.columns:
+        df["v"] = 0.0
+
+    # make numeric
+    for k in ["o", "h", "l", "c", "v"]:
+        df[k] = pd.to_numeric(df[k], errors="coerce")
+
+    # ---- index → DatetimeIndex ----
+    if not isinstance(df.index, pd.DatetimeIndex):
+        date_col = next(
+            (c for c in ["date", "datetime", "dt", "timestamp", "time"] if c in df.columns),
+            None,
+        )
+        if date_col is not None:
+            dt = pd.to_datetime(df[date_col], errors="coerce")
+        else:
+            dt = pd.to_datetime(df.index, errors="coerce")
+    else:
+        dt = df.index
+
+    mask = pd.Series(dt).notna().values
+    if not mask.any():
+        raise ValueError("Could not parse any datetimes for index")
+
+    df = df.loc[mask].copy()
+    dt = pd.DatetimeIndex(dt[mask])
+    try:
+        dt = dt.tz_localize(None)
+    except Exception:
+        pass
+    df.index = dt
+
+    return df.sort_index().dropna(subset=["o", "h", "l", "c"])
+
+
+
 def _resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
-    rule_map = {"W": "W-FRI", "D": "1D", "4H": "4H", "30m": "30T"}
-    rule = rule_map[tf]
+    # Normalize timeframe text (user might type "w", "d", "4h", "30M", etc.)
+    tf_norm = tf.upper()
+
+    rule_map = {
+        "W": "W-FRI",
+        "D": "1D",
+        "4H": "4h",
+        "1H": "1h",  
+        "30M": "30min",   # accept 30M as well
+        "30MIN": "30min",
+    }
+
+    if tf_norm not in rule_map:
+        raise KeyError(f"Unsupported timeframe '{tf}' (normalized: '{tf_norm}')")
+
+    rule = rule_map[tf_norm]
     agg = {"o": "first", "h": "max", "l": "min", "c": "last", "v": "sum"}
     r = df.resample(rule, label="right", closed="right").agg(agg).dropna()
     return r.dropna(subset=["o", "h", "l", "c"])
+
 
 
 def _swing_highs(df: pd.DataFrame, k: int = 3, lookback: int = 200) -> list[float]:
@@ -173,8 +318,8 @@ def _swing_highs(df: pd.DataFrame, k: int = 3, lookback: int = 200) -> list[floa
     return [round(v, 2) for v in peaks[-k:]][::-1]
 
 
-
 # ----------------------- mentor computation helpers ------------------------ #
+
 
 def _smoothed_body_extents(tf_df: pd.DataFrame, n: int) -> tuple[float, float]:
     """Average of last n candle BODIES (min/max of open/close)."""
@@ -229,6 +374,7 @@ def _levels_for_h4(tf_df: pd.DataFrame, cfg: LevelsConfig) -> tuple[float, float
 
 # -------------------- adaptive H4 vs Weekly bias helpers ------------------- #
 
+
 def _apply_bias_toward_mid(bottom: float, mid: float, top: float, compress: float) -> tuple[float, float]:
     """Move bottom/top toward mid by `compress` fraction (centered)."""
     b = mid - (mid - bottom) * (1.0 - compress)
@@ -249,6 +395,7 @@ def _is_almost_same_range(b1: float, t1: float, b2: float, t2: float, eps: float
 # --------------------------------------------------------------------------- #
 #                                    CORE                                     #
 # --------------------------------------------------------------------------- #
+
 
 @dataclass
 class LevelRow:
@@ -295,11 +442,13 @@ def _weekly_detail_rows(weekly_df: pd.DataFrame, cfg: LevelsConfig, prev_highs_t
 
     idx_last = len(weekly_df) - 1
     row_curr = make_row("W", idx_last)
-    if row_curr: rows.append(row_curr)
+    if row_curr:
+        rows.append(row_curr)
 
     if len(weekly_df) >= 2:
         row_prev = make_row("W-1", idx_last - 1)
-        if row_prev: rows.append(row_prev)
+        if row_prev:
+            rows.append(row_prev)
 
     span = max(1, int(getattr(cfg, "weekly_detail_span", 4)))
     tail = weekly_df.tail(span)
@@ -308,7 +457,8 @@ def _weekly_detail_rows(weekly_df: pd.DataFrame, cfg: LevelsConfig, prev_highs_t
         # convert index label → absolute integer position
         i_abs = weekly_df.index.get_loc(lowest_idx)
         row_low = make_row("W-low", i_abs)
-        if row_low: rows.append(row_low)
+        if row_low:
+            rows.append(row_low)
 
     return rows
 
@@ -345,11 +495,12 @@ def compute_levels_sheet(
     if include_m30 and "30m" not in tfs_list:
         tfs_list.append("30m")
 
-    tf_to_n = {"W": config.smooth_bars_W, "D": config.smooth_bars_D, "4H": config.smooth_bars_H4, "30m": config.smooth_bars_M30}
+    tf_to_n = {"W": config.smooth_bars_W, "D": config.smooth_bars_D, "4H": config.smooth_bars_H4,"1H":  config.smooth_bars_H1, "30m": config.smooth_bars_M30}
     tf_to_mode = {
         "W": getattr(config, "range_mode_W", "auto"),
         "D": getattr(config, "range_mode_D", "auto"),
         "4H": getattr(config, "range_mode_H4", "auto"),
+        
         "30m": getattr(config, "range_mode_M30", "auto"),
     }
     mult = config.expansion_mult
@@ -362,8 +513,17 @@ def compute_levels_sheet(
 
     for tf in tfs_list:
         tf_df = _resample(base, tf)
-        if len(tf_df) == 0:
-            tf_df = base.copy()
+        ...
+        if tf == "4H":
+            bottom, top = _levels_for_h4(tf_df, config)
+        else:
+            bottom, top = _levels_for_tf_general(
+                tf_df,
+                tf_to_n.get(tf, 1),
+                tf_to_mode.get(tf, "auto"),
+                mult,
+            )
+
 
         # ---- special weekly detail block ----
         if tf == "W" and want_weekly_detail:
@@ -421,8 +581,166 @@ def compute_levels_sheet(
 
 
 # --------------------------------------------------------------------------- #
+#                         TICKER → LEVELS (UI WRAPPER)                        #
+# --------------------------------------------------------------------------- #
+
+
+def _load_ohlc_for_ticker(ticker: str) -> pd.DataFrame:
+    """
+    Project-level hook: load base timeframe OHLCV for the given ticker.
+
+    Primary source:
+      - tpsl_app.price.load_ohlc_for_levels(ticker)
+
+    If you later add a dedicated tpsl_planner.core.price module, you can
+    extend this to try that first.
+    """
+    try:
+        # reuse the same normalization / JP- / US- rules as the app
+        from tpsl_planner.core.price import load_ohlc_for_levels
+    except Exception as e:
+        raise RuntimeError(
+            "tpsl_app.price.load_ohlc_for_levels is not available; "
+            "make sure tpsl_app/price.py defines it."
+        ) from e
+
+    df = load_ohlc_for_levels(ticker)
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError(
+            "tpsl_app.price.load_ohlc_for_levels must return a pandas DataFrame"
+        )
+    return df
+
+
+def _tf_weight(tf: str) -> float:
+    """
+    Heuristic importance per timeframe for scoring / sorting.
+    Higher = more important.
+    """
+    tf = tf.upper()
+
+    if tf.startswith("W-LOW"):
+        return 1.00
+    if tf.startswith("W-1"):
+        return 0.97
+    if tf.startswith("W"):
+        return 0.99
+    if tf.startswith("D"):
+        return 0.85
+    if "4H" in tf:
+        return 0.75
+    if "1H" in tf:         # NEW — sits between 4H and 30m
+        return 0.70
+    if "30" in tf:
+        return 0.65
+
+    return 0.50
+
+
+
+def pull_levels_for_ticker(
+    ticker: str,
+    timeframes: list[str],
+    max_levels: int = 80,
+    *,
+    df: Optional[pd.DataFrame] = None,
+    config: Optional[LevelsConfig] = None,
+    symbol: Optional[str] = None,
+) -> list[Level]:
+    """
+    High-level helper used by the Pull Levels window.
+
+    1) Load OHLC for `ticker` (unless `df` is provided directly)
+    2) Run `compute_levels_sheet(...)`
+    3) Convert each LevelRow into multiple Level objects:
+         - bottom  -> support
+         - mid     -> pivot
+         - top     -> resistance
+         - prev highs -> extra resistances
+    4) Sort by timeframe weight (W > D > 4H > 30m) and price, then truncate.
+    """
+    if df is None:
+        df = _load_ohlc_for_ticker(ticker)
+
+    cfg = config or LevelsConfig()
+    if timeframes:
+        cfg = replace(cfg, tfs=tuple(timeframes))
+
+    rows = compute_levels_sheet(df, config=cfg, symbol=symbol)
+
+    levels: list[Level] = []
+
+    for row in rows:
+        tf = row.tf
+        base_w = _tf_weight(tf)
+
+        # core band: bottom / mid / top
+        if not math.isnan(row.bottom):
+            levels.append(
+                Level(
+                    timeframe=tf,
+                    price=row.bottom,
+                    kind="support",
+                    label=f"{tf} bottom",
+                    score=base_w * 1.00,
+                    meta={"source": "range_bottom"},
+                )
+            )
+        if not math.isnan(row.mid):
+            levels.append(
+                Level(
+                    timeframe=tf,
+                    price=row.mid,
+                    kind="pivot",
+                    label=f"{tf} mid",
+                    score=base_w * 0.95,
+                    meta={"source": "range_mid"},
+                )
+            )
+        if not math.isnan(row.top):
+            levels.append(
+                Level(
+                    timeframe=tf,
+                    price=row.top,
+                    kind="resistance",
+                    label=f"{tf} top",
+                    score=base_w * 0.98,
+                    meta={"source": "range_top"},
+                )
+            )
+
+        # swing highs: extra resistances
+        if row.prev_highs:
+            parts = [p.strip() for p in row.prev_highs.split(",") if p.strip()]
+            for i, p in enumerate(parts):
+                try:
+                    val = float(p)
+                except Exception:
+                    continue
+                decay = 1.0 - 0.05 * i  # slightly less weight for older highs
+                levels.append(
+                    Level(
+                        timeframe=tf,
+                        price=val,
+                        kind="resistance",
+                        label=f"{tf} swing high #{i+1}",
+                        score=base_w * 0.9 * decay,
+                        meta={"source": "prev_highs", "index": i},
+                    )
+                )
+
+    # sort: higher timeframe weight first, then price ascending
+    def _sort_key(lv: Level):
+        return (-_tf_weight(lv.timeframe), lv.price)
+
+    levels.sort(key=_sort_key)
+    return levels[:max_levels]
+
+
+# --------------------------------------------------------------------------- #
 #                               IMAGE RENDERER                                #
 # --------------------------------------------------------------------------- #
+
 
 def _font(kind="regular", size=15):
     prefer = [
@@ -566,11 +884,10 @@ def render_levels_sheet_img(
     return path
 
 
-
-
 # --------------------------------------------------------------------------- #
 #                               MARKDOWN TABLE                                #
 # --------------------------------------------------------------------------- #
+
 
 def as_markdown_table(rows: List[LevelRow], title: str | None = None, symbol: Optional[str] = None) -> str:
     headers = ["TF", "Current Candle", "Bottom", "Mid", "Top", "Support & Res", "Previous Highs"]
@@ -599,10 +916,10 @@ def as_markdown_table(rows: List[LevelRow], title: str | None = None, symbol: Op
     return "\n".join(lines)
 
 
-
 # --------------------------------------------------------------------------- #
 #                            ONE-LINER CONVENIENCE                            #
 # --------------------------------------------------------------------------- #
+
 
 def compute_and_render(
     df: pd.DataFrame,
@@ -628,3 +945,79 @@ def compute_and_render(
         **kwargs,
     )
     return render_levels_sheet_img(rows, title=title, path=out_path, scale=scale, dpi=dpi, symbol=symbol)
+
+
+if __name__ == "__main__":
+    import sys
+
+    print("\n==============================")
+    print("   Mentor Levels Test Mode")
+    print("==============================\n")
+
+    # 1. Ask for ticker
+    ticker = input("Enter ticker (e.g. 7203.T or 7203): ").strip()
+    if not ticker:
+        print("No ticker provided. Exiting.")
+        sys.exit(0)
+
+    # 2. Ask for TFs
+    tf_input = input("Timeframes? (default = W,D,4H,30m): ").strip()
+    if not tf_input:
+        tfs = ["W", "D", "4H", "30m"]
+    else:
+        tfs = [x.strip() for x in tf_input.split(",") if x.strip()]
+
+    # 3. Print banner
+    print("\nLoading OHLC data...")
+    try:
+        df = _load_ohlc_for_ticker(ticker)
+    except Exception as e:
+        print("\nFailed to load data for:", ticker)
+        print("Error:", e)
+        sys.exit(1)
+
+    cfg = LevelsConfig(tfs=tuple(tfs))
+
+    print("Computing mentor levels...\n")
+    rows = compute_levels_sheet(df, config=cfg, symbol=ticker)
+
+    print("=== Mentor Levels Sheet (Markdown) ===\n")
+    print(as_markdown_table(rows, title=ticker, symbol=ticker))
+
+    print("\n=== Flattened UI levels (pull_levels_for_ticker) ===\n")
+    levels = pull_levels_for_ticker(
+        ticker,
+        tfs,
+        max_levels=80,
+        df=df,
+        config=cfg,
+        symbol=ticker,
+    )
+
+    for lv in levels:
+        price_str = f"{lv.price:.2f}"
+        print(
+            f"{lv.timeframe:6s} "
+            f"{lv.kind:10s} "
+            f"{price_str:>10s}  "
+            f"score={lv.score:5.3f}  "
+            f"{lv.label}"
+        )
+
+    # 4. Optional save image
+    img_choice = input("\nSave PNG image? (y/n): ").strip().lower()
+    if img_choice == "y":
+        out_path = f"./{ticker.replace('.', '_')}_levels.png"
+        try:
+            compute_and_render(
+                df,
+                title=ticker,
+                config=cfg,
+                out_path=out_path,
+                symbol=ticker,
+            )
+            print(f"\nSaved PNG to: {out_path}")
+        except Exception as e:
+            print("Failed to save image:", e)
+
+    print("\nDone.\n")
