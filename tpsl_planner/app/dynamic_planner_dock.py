@@ -2,11 +2,12 @@
 # dynamic_planner_dock.py — Floating Dynamic Planner (no circular imports)
 
 from __future__ import annotations
-from PyQt5.QtCore import pyqtSignal as Signal, Qt
+from PyQt5.QtCore import pyqtSignal as Signal, Qt, QPoint, QSettings
 from PyQt5.QtWidgets import (
     QWidget, QFormLayout, QVBoxLayout, QHBoxLayout,
     QLabel, QDoubleSpinBox, QSpinBox, QComboBox, QCheckBox, QPushButton
 )
+from PyQt5.QtGui import QMouseEvent
 
 # --- Localized strings for Dynamic Planner (self-contained) ---
 _DYN_I18N = {
@@ -81,6 +82,10 @@ class DynamicPlannerDock(QWidget):
         self.setWindowFlags(Qt.Tool | Qt.Window)
         self.setWindowModality(Qt.NonModal)
         self.setMinimumSize(300, 400)
+        
+        # Dragging support
+        self._drag_start = None
+        self._drag_offset = QPoint()
 
         outer = QVBoxLayout(self)
         form = QFormLayout()
@@ -145,6 +150,9 @@ class DynamicPlannerDock(QWidget):
 
         # set title last (uses i18n)
         self.setWindowTitle(self.i18n["dynamic_planner_title"])
+        
+        # Restore saved position from QSettings
+        self._restore_position()
         
     def _populate_regime_items(self):
         """(Re)fill regime combo with localized labels, preserve selection."""
@@ -264,3 +272,45 @@ class DynamicPlannerDock(QWidget):
             "r2": self._last_result.r2,
             "regime": self._last_result.regime,
         })
+
+    # --- Dragging support ---
+    def mousePressEvent(self, event: QMouseEvent):
+        """Start drag on title bar area (top ~30 pixels)."""
+        if event.y() < 30:
+            self._drag_start = event.globalPos()
+            self._drag_offset = self.pos() - self._drag_start
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        """Drag window during mouse move."""
+        if self._drag_start is not None:
+            new_pos = event.globalPos() + self._drag_offset
+            self.move(new_pos)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        """Save position after drag."""
+        self._drag_start = None
+        self._save_position()
+        super().mouseReleaseEvent(event)
+
+    def _restore_position(self):
+        """Restore window position from QSettings."""
+        try:
+            settings = QSettings("TPSL", "TPSL_Planner")
+            x = settings.value("dyn_dock/x", None)
+            y = settings.value("dyn_dock/y", None)
+            if x is not None and y is not None:
+                self.move(int(x), int(y))
+        except Exception:
+            pass
+
+    def _save_position(self):
+        """Save current window position to QSettings."""
+        try:
+            settings = QSettings("TPSL", "TPSL_Planner")
+            pos = self.pos()
+            settings.setValue("dyn_dock/x", pos.x())
+            settings.setValue("dyn_dock/y", pos.y())
+        except Exception:
+            pass

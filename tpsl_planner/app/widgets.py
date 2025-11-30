@@ -11,7 +11,9 @@ from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QGridLayout, QDoubleSpinBox, QSpinBox, QComboBox, QSlider, QPushButton,
     QHBoxLayout, QVBoxLayout, QCheckBox, QGroupBox, QLineEdit, QMessageBox, QFileDialog, QMenu,
-    QMainWindow, QFrame, QDialog, QDialogButtonBox, QSizePolicy, QPlainTextEdit, QToolButton, QInputDialog)
+    QMainWindow, QFrame, QDialog, QDialogButtonBox, QSizePolicy, QPlainTextEdit, QToolButton, QInputDialog,
+    QFontComboBox, QShortcut
+)
 from tpsl_planner.charts.theme import apply_theme as _theme
 
 # ---- Price fetch module ----
@@ -91,13 +93,18 @@ _I18N = {
         "side_short_lbl": "Short",
         "contact_support": "❓Contact Support",
         "contact_tooltip": "Send feedback or report an issue",
+        "apply": "Apply",
         "tooltip_current": "Click to fetch the latest price from Yahoo Finance",
         "note": "Note",
         "note_ph": "Notes (plan, catalyst, risk, rules…)",
         "note_line": "📝 Note: {note}",
         "setup_rating": "Setup rating",
+        "levels": "Levels",
         "rating_none": "None",
         "section": "Section",
+        "shortcut_save": "Ctrl+S",
+        "shortcut_push": "Ctrl+P",
+        "shortcut_levels": "Alt+L",
         "sections": [
             "Tech",
             "Financials",
@@ -154,13 +161,18 @@ _I18N = {
         "side_short_lbl": "売り",
         "contact_support": "❓お問い合わせ",
         "contact_tooltip": "フィードバックや不具合報告を送信",
+        "apply": "適用",
         "tooltip_current": "Yahooファイナンスから最新価格を取得します",
         "note": "メモ",
         "note_ph": "メモ（計画・材料・リスク・ルールなど）",
         "note_line": "📝 メモ: {note}",
         "setup_rating": "セットアップ評価",
+        "levels": "レベル",
         "rating_none": "なし",
         "section": "セクション",
+        "shortcut_save": "Ctrl+S",
+        "shortcut_push": "Ctrl+P",
+        "shortcut_levels": "Alt+L",
         "sections": [
             "テクノロジー",
             "金融",
@@ -250,13 +262,15 @@ DEFAULTS = {
     "open": False,
     "ui_lang": "en",
     "ui_theme": "dark",
+    "font_family": "Yu Gothic UI",
+    "font_size": 10,
     "lockR_enabled": False,
     "lockR_value": 2.0,
     "compact_mode": False,
     "note": "",
     "note_folded": True,  
     "setup_rating": 0,
-    "section": 0,
+    "section": "",
     "hand_size": 100,
 
 }
@@ -430,6 +444,11 @@ class SettingsDialog(QDialog):
         self.cmb_theme = QComboBox(); self.cmb_theme.addItems([i18n["dark"], i18n["light"]])
         m.addWidget(QLabel(i18n["lang"]),  0, 0); m.addWidget(self.cmb_lang,  0, 1)
         m.addWidget(QLabel(i18n["theme"]), 1, 0); m.addWidget(self.cmb_theme, 1, 1)
+        # Font family + size
+        self.cmb_font = QFontComboBox()
+        self.spn_font_size = QSpinBox(); self.spn_font_size.setRange(6, 36); self.spn_font_size.setSingleStep(1)
+        m.addWidget(QLabel("Font"), 2, 0); m.addWidget(self.cmb_font, 2, 1)
+        m.addWidget(QLabel("Size"), 3, 0); m.addWidget(self.spn_font_size, 3, 1)
 
         lay.addWidget(grp_ui); lay.addWidget(grp_lock); lay.addWidget(grp_misc)
 
@@ -446,11 +465,24 @@ class SettingsDialog(QDialog):
         lay.addWidget(self.btn_contact)
 
         # OK / Cancel
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.Apply)
         btns.button(QDialogButtonBox.Ok).setText(i18n["ok"])
         btns.button(QDialogButtonBox.Cancel).setText(i18n["cancel"])
+        # Apply button (not localized in i18n dictionary)
+        try:
+            # keep a reference so we can retranslate later
+            self.btn_apply = btns.button(QDialogButtonBox.Apply)
+            self.btn_apply.setText(i18n.get("apply", "Apply"))
+        except Exception:
+            self.btn_apply = None
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
+        # Connect Apply to handler
+        try:
+            if self.btn_apply:
+                self.btn_apply.clicked.connect(self._on_apply)
+        except Exception:
+            pass
         lay.addWidget(btns)
 
         self.retranslate(self.i18n)
@@ -467,6 +499,15 @@ class SettingsDialog(QDialog):
         self.spn_lockr.setValue(float(s.get("lockR_value", 2.0)))
         self.cmb_lang.setCurrentIndex(0 if s.get("ui_lang", "en") == "en" else 1)
         self.cmb_theme.setCurrentIndex(0 if s.get("ui_theme", "dark") == "dark" else 1)
+        # font
+        try:
+            self.cmb_font.setCurrentFont(QFont(s.get("font_family", "Yu Gothic UI")))
+        except Exception:
+            pass
+        try:
+            self.spn_font_size.setValue(int(s.get("font_size", 10)))
+        except Exception:
+            self.spn_font_size.setValue(10)
 
     def dump_to_state(self, s):
         s["always_on_top"] = self.chk_ontop.isChecked()
@@ -475,13 +516,81 @@ class SettingsDialog(QDialog):
         s["lockR_value"]   = self.spn_lockr.value()
         s["ui_lang"]       = "en" if self.cmb_lang.currentIndex() == 0 else "ja"
         s["ui_theme"]      = "dark" if self.cmb_theme.currentIndex() == 0 else "light"
+        # font
+        try:
+            s["font_family"] = self.cmb_font.currentFont().family()
+        except Exception:
+            s["font_family"] = s.get("font_family", "Yu Gothic UI")
+        try:
+            s["font_size"] = int(self.spn_font_size.value())
+        except Exception:
+            s["font_size"] = int(s.get("font_size", 10))
         return s
+
+    def _on_apply(self):
+        """Apply current dialog settings immediately without closing."""
+        try:
+            parent = self.parent()
+            if parent is None:
+                return
+            # dump dialog values into parent's state
+            self.dump_to_state(parent.state)
+            
+            # Apply theme immediately
+            try:
+                _theme(QApplication.instance(), parent.state.get("ui_theme", "dark"))
+            except Exception:
+                pass
+            
+            # Apply font immediately
+            try:
+                fam = parent.state.get("font_family", "Yu Gothic UI")
+                sz = int(parent.state.get("font_size", 10))
+                QApplication.instance().setFont(QFont(fam, sz))
+            except Exception:
+                pass
+            
+            # Apply always-on-top
+            try:
+                parent.apply_always_on_top(parent.state.get("always_on_top", False))
+            except Exception:
+                pass
+            
+            # Apply compact mode
+            try:
+                parent._toggle_compact(parent.state.get("compact_mode", False))
+            except Exception:
+                pass
+            
+            # Persist all settings to QSettings
+            try:
+                parent.save_settings()
+            except Exception:
+                pass
+            
+            # Update UI after all changes
+            try:
+                parent.retranslate_ui()
+            except Exception:
+                pass
+            try:
+                parent.overlay.retranslate(_I18N[parent.state.get("ui_lang","en")])
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def retranslate(self, i18n: dict):
         self.i18n = i18n
         self.setWindowTitle(i18n["settings"])
         self.btn_contact.setText(i18n["contact_support"])
         self.btn_contact.setToolTip(i18n["contact_tooltip"])
+        # apply button text
+        try:
+            if getattr(self, "btn_apply", None) is not None:
+                self.btn_apply.setText(i18n.get("apply", "Apply"))
+        except Exception:
+            pass
 
 # ===== Overlay =====
 class OverlayWindow(QWidget):
@@ -492,6 +601,11 @@ class OverlayWindow(QWidget):
         self.setWindowFlags(self.windowFlags() | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
         self.bar = ProfitBar()
+        # Track whether the user manually moved the overlay; if True,
+        # avoid programmatically re-positioning it so the overlay isn't "locked".
+        self.user_moved = False
+        # Internal flag to ignore move events triggered by programmatic moves
+        self._ignore_move_event = False
         lay = QVBoxLayout(self); lay.setContentsMargins(6, 6, 6, 6); lay.addWidget(self.bar)
         self.resize(120, 320)
 
@@ -502,6 +616,17 @@ class OverlayWindow(QWidget):
         self._i18n = i18n
         self.setWindowTitle(self._i18n["overlay_title"])
 
+    def moveEvent(self, event):
+        """Detect user moves: if the move wasn't initiated programmatically,
+        mark the overlay as user_moved so we stop auto-repositioning it."""
+        try:
+            super().moveEvent(event)
+        except Exception:
+            pass
+        if getattr(self, "_ignore_move_event", False):
+            return
+        self.user_moved = True
+
 # ===== Main widget =====
 class TPSLWidget(QWidget):
     def __init__(self, parent=None):
@@ -510,6 +635,12 @@ class TPSLWidget(QWidget):
         self.settings = QSettings(APP_ORG, APP_NAME)
         self.state = DEFAULTS.copy()
         self.load_settings()
+        # section flags: track whether the user manually edited the section
+        # during this session and whether the current text was auto-filled.
+        # Start as not user-modified so changes to the ticker will update
+        # the section unless the user edits it now.
+        self._section_user_modified = False
+        self._section_auto_filled = False
 
         try: _theme(QApplication.instance(), self.state.get("ui_theme","dark"))
         except Exception: pass
@@ -531,7 +662,42 @@ class TPSLWidget(QWidget):
         if self.state.get("compact_mode", False): self._toggle_compact(True)
         self.retranslate_ui()
         self.recalc()
+        
+        # Setup keyboard shortcuts (will be initialized after build_ui())
+        self._setup_shortcuts()
     
+    def _rating_to_stars(self, rating_text: str) -> str:
+        """Convert setup rating text (A+, A, B, C, D) to star emoji count."""
+        rating_text = (rating_text or "").strip()
+        if rating_text == "A+":
+            return "⭐⭐⭐⭐⭐"  # 5 stars
+        elif rating_text == "A":
+            return "⭐⭐⭐⭐"  # 4 stars
+        elif rating_text == "B":
+            return "⭐⭐⭐"  # 3 stars
+        elif rating_text == "C":
+            return "⭐⭐"  # 2 stars
+        elif rating_text == "D":
+            return "⭐"  # 1 star
+        else:
+            return ""  # no rating
+
+    def _setup_shortcuts(self):
+        """Setup keyboard shortcuts: Ctrl+S (Save), Ctrl+P (Push), Alt+L (Levels)."""
+        try:
+            QShortcut(Qt.CTRL + Qt.Key_S, self, self.save_settings)
+            QShortcut(Qt.CTRL + Qt.Key_P, self, self.push_to_notion_clicked)
+            QShortcut(Qt.ALT + Qt.Key_L, self, self._on_levels_shortcut)
+        except Exception as e:
+            print(f"[shortcuts] setup error: {e}")
+
+    def _on_levels_shortcut(self):
+        """Handle Alt+L shortcut to show/toggle Levels dialog."""
+        try:
+            self._open_pull_levels()
+        except Exception as e:
+            print(f"[shortcuts] levels error: {e}")
+
     # ---------- UI ----------
     # ------------------------------------------------------------------
 # Debounced ticker input handlers
@@ -570,6 +736,14 @@ class TPSLWidget(QWidget):
         """Called on every keystroke in ticker field."""
         # restart the debounce timer (defined in build_ui)
         if hasattr(self, "_ticker_timer"):
+            # mark that a ticker change happened — allow auto-fill to overwrite
+            # previous auto-filled value when ticker changes, unless the user
+            # has manually edited the section in this session.
+            try:
+                if not getattr(self, "_section_user_modified", False):
+                    self._section_auto_filled = True
+            except Exception:
+                pass
             self._ticker_timer.start()
 
     def _on_ticker_finished(self):
@@ -591,6 +765,7 @@ class TPSLWidget(QWidget):
         self.btn_copy.clicked.connect(self.copy_to_clipboard)
         self.btn_save = QPushButton(t["btn_save"])
         self.btn_save.clicked.connect(self.save_settings)
+        self.btn_save.setToolTip(f"{t['btn_save']} ({t['shortcut_save']})")
         self.btn_reset = QPushButton(t["btn_reset"])
         self.btn_reset.clicked.connect(self.reset_defaults)
         self.btn_overlay = QPushButton(t["btn_overlay"])
@@ -599,6 +774,7 @@ class TPSLWidget(QWidget):
         # Notion push button
         self.btn_push = QPushButton(t["btn_push"])
         self.btn_push.clicked.connect(self.push_to_notion_clicked)
+        self.btn_push.setToolTip(f"{t['btn_push']} ({t['shortcut_push']})")
         self.btn_push.setEnabled(has_valid_env())
              # env-aware state
         self._update_push_button_state()
@@ -696,7 +872,26 @@ class TPSLWidget(QWidget):
         self.spn_curr.setSingleStep(0.01)
         self.spn_curr.setValue(self.state["current"])
 
-        inputs.addWidget(self.btn_current, r, 0,Qt.AlignVCenter | Qt.AlignLeft)
+        # Current price + Levels button
+        self.btn_levels = QPushButton("📊 Levels")
+        self.btn_levels.setFlat(True)
+        self.btn_levels.setCheckable(True)
+        self.btn_levels.setCursor(QtCore.Qt.PointingHandCursor)
+        self.btn_levels.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.btn_levels.setStyleSheet("""
+            QPushButton { background: transparent; border: none; font-weight: 600;; }
+            QPushButton:hover { text-decoration: underline; }
+        """)
+        self.btn_levels.clicked.connect(self._open_pull_levels)
+        self.btn_levels.setToolTip(f"Levels ({t['shortcut_levels']})")
+        # Visual cue when pull window is open: checked state styles
+        self.btn_levels.setStyleSheet(self.btn_levels.styleSheet() + "\nQPushButton:checked { color: #50fa7b; font-weight: 700; }")
+
+        cur_wrap = QWidget(); cur_h = QHBoxLayout(); cur_h.setContentsMargins(0,0,0,0)
+        cur_h.addWidget(self.btn_current); cur_h.addStretch(1)
+        cur_wrap.setLayout(cur_h)
+
+        inputs.addWidget(cur_wrap, r, 0, Qt.AlignVCenter | Qt.AlignLeft)
         inputs.addWidget(self.spn_curr,  r, 1)
 
         # Shares
@@ -757,28 +952,25 @@ class TPSLWidget(QWidget):
             self.cmb_setup_rating.setCurrentIndex(int(self.state.get("setup_rating", 0)))
         except Exception:
             self.cmb_setup_rating.setCurrentIndex(0)
+        # Connect rating change to recalc so output updates immediately
+        self.cmb_setup_rating.currentIndexChanged.connect(self.recalc)
 
-        # Section dropdown
+        # Section text input (free-form). Previously a dropdown.
         self.lbl_section = QLabel(t.get("section", "Section"))
-        self.cmb_section = QComboBox()
-        # populate using i18n list (localized)
-        sects = t.get("sections") if isinstance(t.get("sections"), (list, tuple)) else [
-            "Tech", "Financials", "Energy", "Industrials", "Materials", "Consumer",
-            "Healthcare", "Utilities", "Real Estate", "Transportation", "Defense", "Other",
-        ]
-        self.cmb_section.addItems(sects)
-        try:
-            self.cmb_section.setCurrentIndex(int(self.state.get("section", 0)))
-        except Exception:
-            self.cmb_section.setCurrentIndex(0)
+        self.txt_section = QLineEdit(self.state.get("section", ""))
+        # user edit handler: mark as user-modified and clear auto-filled flag
+        def _on_section_edited(_):
+            self._section_user_modified = True
+            self._section_auto_filled = False
+        self.txt_section.textEdited.connect(_on_section_edited)
 
         # Place both controls on the same row, keep them compact
         self.cmb_setup_rating.setFixedWidth(110)
-        self.cmb_section.setFixedWidth(160)
+        self.txt_section.setFixedWidth(160)
         inputs.addWidget(self.lbl_setup_rating, r, 0)
         inputs.addWidget(self.cmb_setup_rating, r, 1)
         inputs.addWidget(self.lbl_section, r, 2)
-        inputs.addWidget(self.cmb_section, r, 3)
+        inputs.addWidget(self.txt_section, r, 3)
         r += 1
 
         # Open/Idea + Dynamic toggle
@@ -806,7 +998,14 @@ class TPSLWidget(QWidget):
         self.btn_note.setArrowType(Qt.DownArrow if self.btn_note.isChecked() else Qt.RightArrow)
         self.btn_note.setStyleSheet("QToolButton { border: none; font-weight: 600; }")
         self.btn_note.toggled.connect(self._on_note_toggled)
-        inputs.addWidget(self.btn_note, r, 0, 1, 4, Qt.AlignLeft); r += 1
+
+        # Place the Note button and Levels button together on the same row
+        note_wrap = QWidget(); note_h = QHBoxLayout(); note_h.setContentsMargins(0,0,0,0)
+        note_h.addWidget(self.btn_note)
+        note_h.addWidget(self.btn_levels)
+        note_h.addStretch(1)
+        note_wrap.setLayout(note_h)
+        inputs.addWidget(note_wrap, r, 0, 1, 4, Qt.AlignLeft); r += 1
 
         self.txt_note = QPlainTextEdit(self.state.get("note", ""))
         self.txt_note.setPlaceholderText(t["note_ph"])
@@ -879,6 +1078,8 @@ class TPSLWidget(QWidget):
         outputs = QGridLayout(self.outputs_box)
         ro = 0
         self.out_company = QLabel("—")
+        self.out_section = QLabel("—")
+        self.out_rating  = QLabel("—")
         self.out_stop    = QLabel("Stop: — | % —")
         self.out_tgt     = QLabel("Target: — | % —")
         self.out_rr      = QLabel("Risk $ — | Reward $ — | R — | RR —")
@@ -886,6 +1087,8 @@ class TPSLWidget(QWidget):
         self.preview_bar = ProfitBar()
 
         outputs.addWidget(self.out_company, ro, 0); ro += 1
+        outputs.addWidget(self.out_section, ro, 0); ro += 1
+        outputs.addWidget(self.out_rating,  ro, 0); ro += 1
         outputs.addWidget(self.out_stop,    ro, 0)
         outputs.addWidget(self.preview_bar, ro, 1, 4, 1)
         ro += 1
@@ -915,6 +1118,75 @@ class TPSLWidget(QWidget):
         self.spn_sl_price.valueChanged.connect(lambda *_: (self._enforce_tp_sl_bounds(), self._sync_pct_from_price("sl"), self._auto_lockR(), self.recalc()))
         self.spn_tp_price.valueChanged.connect(lambda *_: (self._enforce_tp_sl_bounds(), self._sync_pct_from_price("tp"), self.recalc()))
         self.spn_tick.valueChanged.connect(lambda *_: self._retune_price_spinners())
+
+    # ---------- Pull Levels integration ----------
+    def _open_pull_levels(self):
+        """Open the Pull Levels window and supply callbacks."""
+        try:
+            from tpsl_planner.app.pull_levels_window import PullLevelsWindow
+        except Exception as e:
+            QMessageBox.warning(self, "Module error", f"Could not open Pull Levels window:\n{e}")
+            return
+
+        # If already open, bring to front
+        if getattr(self, "pull_levels_win", None) and self.pull_levels_win.isVisible():
+            try:
+                self.pull_levels_win.raise_(); self.pull_levels_win.activateWindow()
+            except Exception:
+                pass
+            return
+
+        # Create non-modal tool window so user can interact with both windows.
+        self.pull_levels_win = PullLevelsWindow(
+            parent=self,
+            get_current_ticker=lambda: (self.txt_ticker.text() or "").strip(),
+            apply_level_callback=self._apply_level_from_pull,
+            lang=self.state.get("ui_lang", "en"),
+        )
+        try:
+            self.pull_levels_win.setWindowModality(Qt.NonModal)
+        except Exception:
+            pass
+        # Mark button checked while window is open
+        try:
+            self.btn_levels.setChecked(True)
+        except Exception:
+            pass
+        # When the pull window is closed/destroyed, clear the indicator
+        try:
+            self.pull_levels_win.destroyed.connect(lambda *_: self.btn_levels.setChecked(False))
+        except Exception:
+            pass
+        try:
+            # QDialog emits finished(int)
+            self.pull_levels_win.finished.connect(lambda *_: self.btn_levels.setChecked(False))
+        except Exception:
+            pass
+
+        self.pull_levels_win.show()
+        try:
+            self.pull_levels_win.raise_(); self.pull_levels_win.activateWindow()
+        except Exception:
+            pass
+
+    def _apply_level_from_pull(self, price: float, role: str):
+        """Apply a pulled level price as either 'sl', 'tp', or 'entry'."""
+        try:
+            tick = float(self.spn_tick.value() or 0.01)
+            price = self.round_tick(float(price), tick)
+            if role.lower() == "entry":
+                self._set_blocked(self.spn_entry, self.spn_entry.setValue, price)
+            elif role.lower() == "sl":
+                self._set_blocked(self.spn_sl_price, self.spn_sl_price.setValue, price)
+                self._enforce_tp_sl_bounds()
+                self._sync_pct_from_price("sl")
+            elif role.lower() == "tp":
+                self._set_blocked(self.spn_tp_price, self.spn_tp_price.setValue, price)
+                self._enforce_tp_sl_bounds()
+                self._sync_pct_from_price("tp")
+            self.recalc()
+        except Exception:
+            pass
 
     def _on_set_hand_size_clicked(self):
         """Open a small dialog to set the hand size (shares increment)."""
@@ -994,6 +1266,10 @@ class TPSLWidget(QWidget):
         except Exception:
             self.btn_entry.setText("💲Entry")
         self.btn_current.setText("💲" + t["current"])
+        try:
+            self.btn_levels.setText("📊 " + t.get("levels", "Levels"))
+        except Exception:
+            self.btn_levels.setText("📊 Levels")
         # Shares button text (localized)
         try:
             self.btn_shares.setText("🤏" + t["shares"])
@@ -1013,9 +1289,12 @@ class TPSLWidget(QWidget):
         self.btn_copy.setText(t["btn_copy"])
         self.btn_overlay.setText(t["btn_overlay"])
         self.btn_save.setText(t["btn_save"])
+        self.btn_save.setToolTip(f"{t['btn_save']} ({t['shortcut_save']})")
         self.btn_reset.setText(t["btn_reset"])
         self.btn_push.setText(t["btn_push"])
+        self.btn_push.setToolTip(f"{t['btn_push']} ({t['shortcut_push']})")
         self.btn_current.setToolTip(t["tooltip_current"])
+        self.btn_levels.setToolTip(f"Levels ({t['shortcut_levels']})")
         # re-populate Side values per language, preserve choice
         was_long = self._is_long()
         self.cmb_side.blockSignals(True)
@@ -1037,22 +1316,19 @@ class TPSLWidget(QWidget):
         self.cmb_setup_rating.blockSignals(False)
         self.lbl_setup_rating.setText("⭐" + t.get("setup_rating", "Setup Rating"))
 
-        # Section label + items (preserve selection)
+        # Section label (free-form text input). Preserve current text.
         try:
-            s_idx = self.cmb_section.currentIndex()
+            cur_txt = self.txt_section.text()
         except Exception:
-            s_idx = 0
-        self.cmb_section.blockSignals(True)
-        self.cmb_section.clear()
-        sects = t.get("sections") if isinstance(t.get("sections"), (list, tuple)) else [
-            "Tech", "Financials", "Energy", "Industrials", "Materials", "Consumer",
-            "Healthcare", "Utilities", "Real Estate", "Transportation", "Defense", "Other",
-        ]
-        self.cmb_section.addItems(sects)
-        s_idx = max(0, min(s_idx, self.cmb_section.count()-1))
-        self.cmb_section.setCurrentIndex(s_idx)
-        self.cmb_section.blockSignals(False)
+            cur_txt = ""
+        # update label only (localized)
         self.lbl_section.setText("📂" + t.get("section", "Section"))
+        # preserve existing user-entered text
+        try:
+            if cur_txt:
+                self.txt_section.setText(cur_txt)
+        except Exception:
+            pass
 
         self._update_open_label(self.sw_open.isChecked())
 
@@ -1067,16 +1343,26 @@ class TPSLWidget(QWidget):
             "lockR_value":   self.state.get("lockR_value", 2.0),
             "ui_lang":       self.state.get("ui_lang", "en"),
             "ui_theme":      self.state.get("ui_theme", "dark"),
+            "font_family":   self.state.get("font_family", "Yu Gothic UI"),
+            "font_size":     int(self.state.get("font_size", 10)),
         }
         dlg.load_from_state(prime)
         if dlg.exec_() == QDialog.Accepted:
             dlg.dump_to_state(self.state)
+            # persist and apply settings (including font)
+            try:
+                self.save_settings()
+            except Exception:
+                pass
             try: _theme(QApplication.instance(), self.state["ui_theme"])
             except Exception: pass
             self.apply_always_on_top(self.state["always_on_top"])
             self._toggle_compact(self.state["compact_mode"])
             self.retranslate_ui()
-            self.overlay.retranslate(_I18N[self.state["ui_lang"]])
+            try:
+                self.overlay.retranslate(_I18N[self.state["ui_lang"]])
+            except Exception:
+                pass
             
             if getattr(self, "dyn_dock", None):
                 try:
@@ -1107,6 +1393,63 @@ class TPSLWidget(QWidget):
         txt = (self.cmb_side.currentText() or "").strip()
         return txt in ("Long", "買い")
 
+    def _map_section_to_canonical(self, raw: str) -> str:
+        """Map a free-form section text (possibly localized) to canonical English section name.
+        Falls back to the raw string when mapping isn't possible.
+        """
+        s = (raw or "").strip()
+        if not s:
+            return ""
+        lang = self.state.get("ui_lang", "en")
+        localized = _I18N.get(lang, {}).get("sections", SECTIONS_EN)
+        # exact match against localized labels
+        for i, name in enumerate(localized):
+            if s.lower() == (name or "").lower():
+                return SECTIONS_EN[i] if i < len(SECTIONS_EN) else s
+        # exact match against canonical names
+        for name in SECTIONS_EN:
+            if s.lower() == name.lower():
+                return name
+        # heuristic keyword mapping
+        k = s.lower()
+        # Japanese keyword matching (common COMPANY name fragments)
+        try:
+            if any(x in s for x in ("電力", "電気", "電")):
+                return "Utilities"
+            if any(x in s for x in ("銀行", "証券", "フィナンシャル", "金融", "信託")):
+                return "Financials"
+            if any(x in s for x in ("石油", "ガス", "エネルギー")):
+                return "Energy"
+            if any(x in s for x in ("製造", "工業", "工業所", "工業株")):
+                return "Industrials"
+            if any(x in s for x in ("素材", "化学", "金属", "鉱業")):
+                return "Materials"
+            if any(x in s for x in ("食品", "飲料", "小売", "チェーン")):
+                return "Consumer"
+            if any(x in s for x in ("医薬", "製薬", "ヘルス", "病院", "医療")):
+                return "Healthcare"
+            if any(x in s for x in ("不動産", "リート", "プロパティ")):
+                return "Real Estate"
+            if any(x in s for x in ("運輸", "輸送", "海運", "物流")):
+                return "Transportation"
+        except Exception:
+            pass
+
+        # English / international keyword matching
+        # More extensive keyword lists to detect large tech/consumer companies
+        if any(x in k for x in ("tech", "software", "semiconductor", "chip", "cloud", "internet", "apple", "amazon", "google", "alphabet", "microsoft", "msft", "nvidia", "intel", "amd", "tesla", "meta", "facebook", "oracle", "sap", "salesforce", "adobe", "it", "ai", "machine learning", "semiconductor")): return "Tech"
+        if any(x in k for x in ("bank", "financial", "finance", "broker")): return "Financials"
+        if any(x in k for x in ("energy", "oil", "gas", "petro")): return "Energy"
+        if any(x in k for x in ("industrial", "manufactur")): return "Industrials"
+        if any(x in k for x in ("material", "metal", "mining")): return "Materials"
+        if any(x in k for x in ("consumer", "retail", "food", "beverage")): return "Consumer"
+        if any(x in k for x in ("health", "pharma", "pharmaceutical", "medical")): return "Healthcare"
+        if any(x in k for x in ("utility", "utilities")): return "Utilities"
+        if any(x in k for x in ("real", "estate", "property")): return "Real Estate"
+        if any(x in k for x in ("transport", "air", "rail", "logistics", "shipping")): return "Transportation"
+        if any(x in k for x in ("defense", "aerospace", "military")): return "Defense"
+        return s
+
     # ---------- Notion push ----------
     def _collect_trade_dict(self):
         note_txt = self.txt_note.toPlainText().strip()
@@ -1131,10 +1474,11 @@ class TPSLWidget(QWidget):
             "r": R, "notes": note_txt , "status": status,
             "setup_rating": self.cmb_setup_rating.currentText(),
             "setup_rating_value": int(self.cmb_setup_rating.currentIndex()),
-            # send canonical English section name for backend/Notion mapping
-            "section": SECTIONS_EN[int(self.cmb_section.currentIndex())] if 0 <= int(self.cmb_section.currentIndex()) < len(SECTIONS_EN) else self.cmb_section.currentText(),
-            "section_display": self.cmb_section.currentText(),
-            "section_value": int(self.cmb_section.currentIndex()),
+            # Section: free-form text. Try to map localized label back to canonical English.
+            "section_raw": self.txt_section.text().strip(),
+            "section_display": self.txt_section.text().strip(),
+            "section": self._map_section_to_canonical(self.txt_section.text().strip()),
+            "section_value": self.txt_section.text().strip(),
         }
 
     def push_to_notion_clicked(self):
@@ -1248,6 +1592,22 @@ class TPSLWidget(QWidget):
     def load_settings(self):
         for k, v in DEFAULTS.items():
             self.state[k] = self.settings.value(k, v, type=type(v))
+        # Backwards-compat: older versions stored `section` as an index (int).
+        # If we detect a numeric legacy value, convert it to the localized
+        # section label so the new free-form `txt_section` shows a human name.
+        try:
+            sec = self.state.get("section", "")
+            # QSettings with type=str may have converted ints to strings like '0'
+            if isinstance(sec, (int,)) or (isinstance(sec, str) and sec.isdigit()):
+                idx = int(sec)
+                lang = self.settings.value("ui_lang", self.state.get("ui_lang", "en")) or self.state.get("ui_lang", "en")
+                localized = _I18N.get(lang, {}).get("sections", SECTIONS_EN)
+                if 0 <= idx < len(localized):
+                    self.state["section"] = localized[idx]
+                else:
+                    self.state["section"] = ""
+        except Exception:
+            pass
         self.state.setdefault("ui_lang", "en"); self.state.setdefault("ui_theme", "dark")
         self.state.setdefault("lockR_enabled", False); self.state.setdefault("lockR_value", 2.0)
         self.state.setdefault("compact_mode", False)
@@ -1277,16 +1637,33 @@ class TPSLWidget(QWidget):
             self.settings.setValue("setup_rating", int(self.cmb_setup_rating.currentIndex()))
         except Exception:
             self.settings.setValue("setup_rating", 0)
-        # Section index
+        # Section text
         try:
-            self.settings.setValue("section", int(self.cmb_section.currentIndex()))
+            self.settings.setValue("section", self.txt_section.text())
         except Exception:
-            self.settings.setValue("section", 0)
+            self.settings.setValue("section", "")
+        # Font settings (persist from state)
+        try:
+            self.settings.setValue("font_family", self.state.get("font_family", "Yu Gothic UI"))
+        except Exception:
+            pass
+        try:
+            self.settings.setValue("font_size", int(self.state.get("font_size", 10)))
+        except Exception:
+            pass
         # Hand size (shares increment)
         try:
             self.settings.setValue("hand_size", int(self.state.get("hand_size", 100)))
         except Exception:
             self.settings.setValue("hand_size", 100)
+        # Apply font immediately
+        try:
+            from PyQt5.QtGui import QFont
+            fam = self.settings.value("font_family", self.state.get("font_family", "Yu Gothic UI"))
+            sz = int(self.settings.value("font_size", int(self.state.get("font_size", 10))))
+            QApplication.instance().setFont(QFont(fam, sz))
+        except Exception:
+            pass
 
 
 
@@ -1420,6 +1797,66 @@ class TPSLWidget(QWidget):
 
             ui = _OUT_I18N[self.state.get("ui_lang","en")]
             self.out_company.setText(f"{company_name} ({ticker_norm})" if company_name else ticker_norm)
+            
+            # Display section and setup rating
+            section_txt = (self.txt_section.text() or "").strip()
+            rating_txt = self.cmb_setup_rating.currentText() if self.cmb_setup_rating.currentIndex() >= 0 else ""
+            rating_stars = self._rating_to_stars(rating_txt)
+            self.out_section.setText(f"📂 Section: {section_txt}" if section_txt else "📂 Section: —")
+            self.out_rating.setText(f"{rating_stars} {rating_txt}" if rating_stars else "⭐ Rating: —")
+
+            # Auto-fill section text from company name when available.
+            # Behavior:
+            # - Do not override if the user manually edited the field.
+            # - Otherwise, overwrite when the field is empty or was previously
+            #   auto-filled by the app (so changing tickers updates the value).
+            try:
+                if company_name:
+                    if getattr(self, "_section_user_modified", False):
+                        # user edited -> do not auto-overwrite
+                        pass
+                    else:
+                        inferred = self._map_section_to_canonical(company_name)
+                        # Prefer canonical sector mapped from company name
+                        display_label = None
+                        # 1) try mapping from company name
+                        mapped = self._map_section_to_canonical(company_name)
+                        if mapped and mapped in SECTIONS_EN:
+                            lang = self.state.get("ui_lang", "en")
+                            localized = _I18N.get(lang, {}).get("sections", SECTIONS_EN)
+                            try:
+                                idx = SECTIONS_EN.index(mapped)
+                                display_label = localized[idx] if idx < len(localized) else mapped
+                            except Exception:
+                                display_label = mapped
+
+                        # 2) if mapping failed, try yfinance sector lookup (via company_lookup)
+                        if not display_label:
+                            try:
+                                from tpsl_planner.io.company_lookup import get_company_sector
+                                sec = get_company_sector(ticker_norm)
+                                if sec:
+                                    mapped2 = self._map_section_to_canonical(sec)
+                                    if mapped2 and mapped2 in SECTIONS_EN:
+                                        lang = self.state.get("ui_lang", "en")
+                                        localized = _I18N.get(lang, {}).get("sections", SECTIONS_EN)
+                                        try:
+                                            idx = SECTIONS_EN.index(mapped2)
+                                            display_label = localized[idx] if idx < len(localized) else mapped2
+                                        except Exception:
+                                            display_label = mapped2
+                            except Exception:
+                                display_label = None
+
+                        # Only set the field when we have a canonical sector label.
+                        cur_txt = (self.txt_section.text() or "").strip()
+                        was_auto = getattr(self, "_section_auto_filled", False)
+                        if display_label and (not cur_txt or was_auto):
+                            self.txt_section.setText(display_label)
+                            self._section_auto_filled = True
+                            self._section_user_modified = False
+            except Exception:
+                pass
             self.out_stop.setText(ui["stop_ui"].format(
                 stop=self._fmt_price(stop_price, p_dec, ccy),
                 spct=self._fmt_signed_pct(spct),
@@ -1474,7 +1911,7 @@ class TPSLWidget(QWidget):
                 md["ticker_side"].format(ticker=ticker_norm, side=side_md),
                 "",
                 # include section and setup rating (localized display)
-                md.get("section_line", "Section: {section}").format(section=self.cmb_section.currentText()),
+                md.get("section_line", "Section: {section}").format(section=self.txt_section.text()),
                 md.get("rating_line", "Setup rating: {rating}").format(rating=(rating_lbl + stars)),
                 "",
                 md["entry_line"].format(entry=entry_s, curr=curr_s, shares=shares),
@@ -1537,11 +1974,11 @@ class TPSLWidget(QWidget):
         except Exception:
             self.cmb_setup_rating.setCurrentIndex(0)
 
-        # restore section
+        # restore section (free-form text)
         try:
-            self.cmb_section.setCurrentIndex(int(self.state.get("section", 0)))
+            self.txt_section.setText(self.state.get("section", ""))
         except Exception:
-            self.cmb_section.setCurrentIndex(0)
+            self.txt_section.setText("")
 
 
         try: _theme(QApplication.instance(), self.state["ui_theme"])
@@ -1556,12 +1993,42 @@ class TPSLWidget(QWidget):
 
     def toggle_overlay(self):
         if not getattr(self, "overlay", None):
+            # create overlay without making it a child of the main widget;
+            # we'll position it relative to the main window when showing
             self.overlay = OverlayWindow(i18n=_I18N[self.state["ui_lang"]])
             self.overlay.hide()
-        if self.overlay.isVisible(): self.overlay.hide()
+        if self.overlay.isVisible():
+            self.overlay.hide()
         else:
-            geo = self.geometry(); self.overlay.move(geo.right() + 12, geo.top())
-            self.push_to_overlay(); self.overlay.show()
+            # Show overlay first (so size is known), then position it adjacent
+            try:
+                self.overlay.show()
+                # Only auto-position if the user hasn't manually moved the overlay
+                try:
+                    if not getattr(self.overlay, "user_moved", False):
+                        # avoid treating this programmatic move as a user move
+                        try:
+                            self.overlay._ignore_move_event = True
+                        except Exception:
+                            pass
+                        self._position_overlay()
+                        # clear the ignore flag on next event loop turn
+                        try:
+                            QTimer.singleShot(0, lambda: setattr(self.overlay, "_ignore_move_event", False))
+                        except Exception:
+                            pass
+                except Exception:
+                    try:
+                        self._position_overlay()
+                    except Exception:
+                        pass
+            except Exception:
+                try:
+                    geo = self.window().frameGeometry() if self.window() is not None else self.geometry()
+                    self.overlay.move(geo.right() + 12, geo.top())
+                except Exception:
+                    pass
+            self.push_to_overlay()
 
     def push_to_overlay(self):
         if not getattr(self, "overlay", None) or not self.overlay.isVisible():
@@ -1573,6 +2040,39 @@ class TPSLWidget(QWidget):
         tgt_price = self.target_price(entry, tgt_pct, long_side, tick)
         curr = self.spn_curr.value(); open_ = self.sw_open.isChecked()
         self.overlay.update_values(entry, stop_price, tgt_price, curr, long_side, open_)
+        # keep overlay adjacent to main window while visible
+        try:
+            # reposition after updating values
+            self._position_overlay()
+        except Exception:
+            pass
+
+    def _position_overlay(self):
+        """Move overlay to sit adjacent to the main window without going off-screen."""
+        if not getattr(self, "overlay", None):
+            return
+        try:
+            # Get the main window's on-screen geometry (frameGeometry gives global coords)
+            main_win = self.window() or self
+            try:
+                geo = main_win.frameGeometry()
+            except Exception:
+                geo = main_win.geometry()
+            ow = self.overlay.width() or self.overlay.sizeHint().width(); oh = self.overlay.height() or self.overlay.sizeHint().height()
+            screen = QApplication.primaryScreen().availableGeometry()
+            x = geo.right() + 12
+            y = geo.top()
+            # If overlay would go off right edge, place it to the left of main window
+            if x + ow > screen.right():
+                x = geo.left() - 12 - ow
+            # Clamp vertically to screen
+            if y + oh > screen.bottom():
+                y = max(screen.top(), screen.bottom() - oh)
+            if y < screen.top():
+                y = screen.top()
+            self.overlay.move(int(x), int(y))
+        except Exception:
+            pass
 
     # ---------- .env menu ----------
     def _show_env_context_menu(self, pos):

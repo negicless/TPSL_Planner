@@ -25,7 +25,18 @@ def main():
 
     # --- Create the application ---
     app = QApplication(sys.argv)
-    app.setFont(QFont("Yu Gothic UI", 10))
+    # Apply font from user settings if present
+    try:
+        from PyQt5.QtCore import QSettings
+        settings = QSettings("Cless", "TPSL-Plannerr")
+        fam = settings.value("font_family", "Yu Gothic UI")
+        sz = int(settings.value("font_size", 10))
+        app.setFont(QFont(fam, sz))
+    except Exception:
+        try:
+            app.setFont(QFont("Yu Gothic UI", 10))
+        except Exception:
+            pass
 
     # --- Ensure .env exists and load it ---
     ensure_env_file()

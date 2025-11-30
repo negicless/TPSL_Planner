@@ -207,6 +207,36 @@ __all__ = [
 ]
 
 
+@lru_cache(maxsize=2048)
+def get_company_sector(ticker: str) -> str:
+    """Return a best-effort sector/industry string for `ticker`.
+
+    Tries (in order):
+    - yfinance `info['sector']` or `info['industry']` when `yfinance` is available
+    - seed/cache lookup if available (rare)
+    - empty string on failure
+    """
+    if not ticker:
+        return ""
+    t = normalize_ticker(ticker)
+    # 1) try seed/cache (if seed contains sector info it would be stored specially,
+    # but for now we prioritize yfinance)
+    try:
+        if yf is not None:
+            try:
+                info = yf.Ticker(t).info or {}
+                sec = info.get("sector") or info.get("industry") or ""
+                if isinstance(sec, str) and sec:
+                    return sec.strip()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # fallback: no sector known
+    return ""
+
+
 def display_ticker(t: str) -> str:
     """Return clean display ticker (remove .T, .F, etc. for JP)."""
     if not t:
