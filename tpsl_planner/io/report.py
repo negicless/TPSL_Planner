@@ -16,6 +16,17 @@ def generate_trade_report(trade: dict, folder: str = "reports", make_pdf: bool =
     base_name = f"{trade.get('ticker','-')}_{date_str}"
     txt_path = Path(folder) / f"{base_name}.txt"
 
+    # append stars to the rating for the text/pdf report (A+ -> 5, A ->4, B->3, C->2, D->1)
+    rating_lbl = (trade.get('setup_rating') or "").strip()
+    _rating_to_stars = {"A+":5, "A":4, "B":3, "C":2, "D":1}
+    stars = ""
+    try:
+        cnt = _rating_to_stars.get(rating_lbl.upper(), 0)
+        if cnt > 0:
+            stars = " " + ("⭐" * cnt)
+    except Exception:
+        stars = ""
+
     content = f"""🧭 --Trade Setup Summary--
 
 🎯 Ticker: {trade.get('ticker','')}
@@ -26,6 +37,8 @@ def generate_trade_report(trade: dict, folder: str = "reports", make_pdf: bool =
 🎯 Target: {trade.get('target','')}
 📊 Shares: {trade.get('shares','')}
 ⚖️ R-Multiple: {trade.get('r','')}
+📂 Section: {trade.get('section','')}
+⭐ Setup rating: {rating_lbl}{stars}
 🗒 Notes: {trade.get('notes','')}
 
 📅 Date: {datetime.date.today().isoformat()}

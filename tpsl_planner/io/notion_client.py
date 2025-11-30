@@ -189,6 +189,36 @@ def send_trade_to_notion(
             r_val = None
     props.update(_as_number_or_text(props_schema, "R-Multiple", r_val))
 
+    # Section (select/text)
+    if "Section" in props_schema:
+        props.update(_as_select_or_text(props_schema, "Section", trade.get("section")))
+    elif "Sector" in props_schema:
+        props.update(_as_select_or_text(props_schema, "Sector", trade.get("section")))
+
+    # Setup rating (handle multi_select, select, or text) — try common property names
+    for _k in ("Setup Rating", "Setup rating", "Rating", "Setup"):
+        if _k in props_schema:
+            prop_type = props_schema[_k].get("type")
+            val = trade.get("setup_rating")
+            if prop_type == "multi_select" and val:
+                # Notion expects a list of {name: ..} for multi_select
+                try:
+                    props.update({
+                        _k: {"multi_select": [{"name": str(val)}]}
+                    })
+                except Exception:
+                    pass
+            else:
+                # fallback to select/text handling
+                props.update(_as_select_or_text(props_schema, _k, val))
+            break
+
+    # Setup rating numeric value (if DB has a number property for it)
+    for _k in ("Setup Rating Value", "Setup rating value", "Rating Value", "setup_rating_value"):
+        if _k in props_schema:
+            props.update(_as_number_or_text(props_schema, _k, trade.get("setup_rating_value")))
+            break
+
     # Default Status
     props.update(_set_status_default(props_schema, trade.get("status")))
 

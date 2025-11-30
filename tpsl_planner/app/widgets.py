@@ -11,7 +11,7 @@ from PyQt5.QtGui import QFont, QColor, QPainter, QPen, QBrush
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QGridLayout, QDoubleSpinBox, QSpinBox, QComboBox, QSlider, QPushButton,
     QHBoxLayout, QVBoxLayout, QCheckBox, QGroupBox, QLineEdit, QMessageBox, QFileDialog, QMenu,
-    QMainWindow, QFrame, QDialog, QDialogButtonBox, QSizePolicy, QPlainTextEdit, QToolButton)
+    QMainWindow, QFrame, QDialog, QDialogButtonBox, QSizePolicy, QPlainTextEdit, QToolButton, QInputDialog)
 from tpsl_planner.charts.theme import apply_theme as _theme
 
 # ---- Price fetch module ----
@@ -31,6 +31,22 @@ from tpsl_planner.io.env_tools import load_env, ensure_env_template, env_file_pa
 from tpsl_planner.io.company_lookup import normalize_ticker, get_company_name
 APP_ORG = "Cless"
 APP_NAME = "TPSL-Plannerr"
+
+# Canonical English section keys (used for backend / Notion mapping)
+SECTIONS_EN = [
+    "Tech",
+    "Financials",
+    "Energy",
+    "Industrials",
+    "Materials",
+    "Consumer",
+    "Healthcare",
+    "Utilities",
+    "Real Estate",
+    "Transportation",
+    "Defense",
+    "Other",
+]
 
 # ---------------- UI i18n (EN/JA) ----------------
 _I18N = {
@@ -78,9 +94,24 @@ _I18N = {
         "tooltip_current": "Click to fetch the latest price from Yahoo Finance",
         "note": "Note",
         "note_ph": "Notes (plan, catalyst, risk, rules…)",
-         "note_line": "📝 Note: {note}"
-
-
+        "note_line": "📝 Note: {note}",
+        "setup_rating": "Setup rating",
+        "rating_none": "None",
+        "section": "Section",
+        "sections": [
+            "Tech",
+            "Financials",
+            "Energy",
+            "Industrials",
+            "Materials",
+            "Consumer",
+            "Healthcare",
+            "Utilities",
+            "Real Estate",
+            "Transportation",
+            "Defense",
+            "Other",
+        ],
     },
     "ja": {
         "title": "TP-SL",
@@ -126,7 +157,24 @@ _I18N = {
         "tooltip_current": "Yahooファイナンスから最新価格を取得します",
         "note": "メモ",
         "note_ph": "メモ（計画・材料・リスク・ルールなど）",
-        "note_line": "📝 メモ: {note}"
+        "note_line": "📝 メモ: {note}",
+        "setup_rating": "セットアップ評価",
+        "rating_none": "なし",
+        "section": "セクション",
+        "sections": [
+            "テクノロジー",
+            "金融",
+            "エネルギー",
+            "工業",
+            "素材",
+            "消費財",
+            "ヘルスケア",
+            "公益事業",
+            "不動産",
+            "輸送",
+            "防衛",
+            "その他",
+        ]
     }
 }
 
@@ -157,6 +205,8 @@ _MD_I18N = {
         "rr_line": "⚖️ Risk: {risk} | 🏆 Reward: {reward}",
         "r_line": "📐 R-Multiple: {R} | RR Ratio: {RR}",
         "unreal_line": "📊 Unrealized P/L: {upl} | 💎 Breakeven: {be}",
+        "section_line": "📂 Section: {section}",
+        "rating_line": "⭐ Setup rating: {rating}",
         "fee_line": "💸 Fees: Flat {flat} + Per-share {ps}",
         "status_open": "✅ Open",
         "status_idea": "✅ Idea",
@@ -172,6 +222,8 @@ _MD_I18N = {
         "rr_line": "⚖️ リスク: {risk} | 🏆 リワード: {reward}",
         "r_line": "📐 R倍数: {R} | RR比: {RR}",
         "unreal_line": "📊 含み損益: {upl} | 💎 損益分岐点: {be}",
+        "section_line": "📂 セクション: {section}",
+        "rating_line": "⭐ セットアップ評価: {rating}",
         "fee_line": "💸 手数料: 定額 {flat} + 株単価 {ps}",
         "status_open": "✅ エントリー済み",
         "status_idea": "💡 アイディア",
@@ -203,6 +255,9 @@ DEFAULTS = {
     "compact_mode": False,
     "note": "",
     "note_folded": True,  
+    "setup_rating": 0,
+    "section": 0,
+    "hand_size": 100,
 
 }
 
@@ -603,13 +658,23 @@ class TPSLWidget(QWidget):
         inputs.addWidget(self.lbl_tick, r, 0)
         inputs.addWidget(self.spn_tick, r, 1)
 
-        self.lbl_entry = QLabel(t.get("entry", "Entry"))
+        # Entry button (click to copy current price into entry)
+        self.btn_entry = QPushButton("💲 Entry")
+        self.btn_entry.setFlat(True)
+        self.btn_entry.setCursor(QtCore.Qt.PointingHandCursor)
+        self.btn_entry.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.btn_entry.setStyleSheet("""
+            QPushButton { background: transparent; border: none; font-weight: 600;; }
+            QPushButton:hover { text-decoration: underline; }
+        """)
+        self.btn_entry.clicked.connect(self._on_entry_from_current_clicked)
+
         self.spn_entry = QDoubleSpinBox()
         self.spn_entry.setDecimals(2)
         self.spn_entry.setRange(0, 1e12)
         self.spn_entry.setSingleStep(0.01)
         self.spn_entry.setValue(self.state["entry"])
-        inputs.addWidget(self.lbl_entry, r, 2)
+        inputs.addWidget(self.btn_entry, r, 2)
         inputs.addWidget(self.spn_entry, r, 3)
         r += 1
 
@@ -635,11 +700,38 @@ class TPSLWidget(QWidget):
         inputs.addWidget(self.spn_curr,  r, 1)
 
         # Shares
-        self.lbl_shares = QLabel(t.get("shares", "Shares"))
+        # Shares button (click to set hand size) + shares spinner
+        self.btn_shares = QPushButton(t.get("shares", "Shares"))
+        self.btn_shares.setFlat(True)
+        self.btn_shares.setCursor(QtCore.Qt.PointingHandCursor)
+        self.btn_shares.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.btn_shares.setStyleSheet("""
+            QPushButton { background: transparent; border: none; font-weight: 600;; }
+            QPushButton:hover { text-decoration: underline; }
+        """)
+        self.btn_shares.clicked.connect(self._on_set_hand_size_clicked)
+
         self.spn_shares = QSpinBox()
         self.spn_shares.setRange(0, 10_000_000)
         self.spn_shares.setValue(self.state["shares"])
-        inputs.addWidget(self.lbl_shares, r, 2)
+        # restore hand size (spinner increment)
+        try:
+            hs = int(self.state.get("hand_size", 100) or 100)
+            self.spn_shares.setSingleStep(max(1, hs))
+            # align current shares to multiple of hand size
+            v = int(self.spn_shares.value())
+            if hs > 1 and v % hs != 0:
+                newv = int(round(v / hs) * hs)
+                self._set_blocked(self.spn_shares, self.spn_shares.setValue, newv)
+        except Exception:
+            pass
+        # initialize single step from saved hand_size
+        try:
+            step = int(self.state.get("hand_size", 100) or 100)
+        except Exception:
+            step = 100
+        self.spn_shares.setSingleStep(max(1, step))
+        inputs.addWidget(self.btn_shares, r, 2)
         inputs.addWidget(self.spn_shares, r, 3)
         r += 1
 
@@ -654,6 +746,39 @@ class TPSLWidget(QWidget):
         fee_wrap.setLayout(fee_row)
         inputs.addWidget(self.lbl_fees, r, 0)
         inputs.addWidget(fee_wrap, r, 1, 1, 3)
+        r += 1
+
+        # Setup rating (A+, A, B, C, D) + Section dropdown on same row
+        self.lbl_setup_rating = QLabel(t.get("setup_rating", "Setup rating"))
+        self.cmb_setup_rating = QComboBox()
+        # rating tiers
+        self.cmb_setup_rating.addItems(["A+", "A", "B", "C", "D"])
+        try:
+            self.cmb_setup_rating.setCurrentIndex(int(self.state.get("setup_rating", 0)))
+        except Exception:
+            self.cmb_setup_rating.setCurrentIndex(0)
+
+        # Section dropdown
+        self.lbl_section = QLabel(t.get("section", "Section"))
+        self.cmb_section = QComboBox()
+        # populate using i18n list (localized)
+        sects = t.get("sections") if isinstance(t.get("sections"), (list, tuple)) else [
+            "Tech", "Financials", "Energy", "Industrials", "Materials", "Consumer",
+            "Healthcare", "Utilities", "Real Estate", "Transportation", "Defense", "Other",
+        ]
+        self.cmb_section.addItems(sects)
+        try:
+            self.cmb_section.setCurrentIndex(int(self.state.get("section", 0)))
+        except Exception:
+            self.cmb_section.setCurrentIndex(0)
+
+        # Place both controls on the same row, keep them compact
+        self.cmb_setup_rating.setFixedWidth(110)
+        self.cmb_section.setFixedWidth(160)
+        inputs.addWidget(self.lbl_setup_rating, r, 0)
+        inputs.addWidget(self.cmb_setup_rating, r, 1)
+        inputs.addWidget(self.lbl_section, r, 2)
+        inputs.addWidget(self.cmb_section, r, 3)
         r += 1
 
         # Open/Idea + Dynamic toggle
@@ -791,6 +916,28 @@ class TPSLWidget(QWidget):
         self.spn_tp_price.valueChanged.connect(lambda *_: (self._enforce_tp_sl_bounds(), self._sync_pct_from_price("tp"), self.recalc()))
         self.spn_tick.valueChanged.connect(lambda *_: self._retune_price_spinners())
 
+    def _on_set_hand_size_clicked(self):
+        """Open a small dialog to set the hand size (shares increment)."""
+        try:
+            cur = int(self.state.get("hand_size", 100) or 100)
+            val, ok = QInputDialog.getInt(self, "Hand Size", "Hand size (shares):", cur, 1, 10_000_000, 1)
+            if not ok:
+                return
+            self.state["hand_size"] = int(val)
+            self.spn_shares.setSingleStep(max(1, int(val)))
+            # align current shares to multiple of hand size
+            try:
+                v = int(self.spn_shares.value())
+                hs = int(val)
+                if hs > 1 and v % hs != 0:
+                    newv = int(round(v / hs) * hs)
+                    self._set_blocked(self.spn_shares, self.spn_shares.setValue, newv)
+            except Exception:
+                pass
+            self.save_settings()
+        except Exception:
+            pass
+
     # ---------- Fetch button ----------
     def _on_fetch_current_clicked(self):
         from tpsl_planner.core.price import get_last_price, PriceError
@@ -818,6 +965,17 @@ class TPSLWidget(QWidget):
             self.btn_current.setText(old_txt)      # always restore
             self._price_fetching = False
 
+    def _on_entry_from_current_clicked(self):
+        """Copy the current price into the Entry spinner and recalc."""
+        try:
+            val = self.spn_curr.value()
+            # preserve decimals of entry spinner
+            dec = self.spn_entry.decimals()
+            self.spn_entry.setValue(round(val, dec))
+            self.recalc()
+        except Exception:
+            pass
+
 
     # ---------- Retranslation ----------
     def retranslate_ui(self):
@@ -830,9 +988,17 @@ class TPSLWidget(QWidget):
         self.lbl_ticker.setText("🏷️" + t["ticker"])
         self.lbl_side.setText("🚦" + t["side"])
         self.lbl_tick.setText("🔢" + t["tick"])
-        self.lbl_entry.setText("💲" + t["entry"])
+        # Entry button text (localized)
+        try:
+            self.btn_entry.setText("💲" + t["entry"])
+        except Exception:
+            self.btn_entry.setText("💲Entry")
         self.btn_current.setText("💲" + t["current"])
-        self.lbl_shares.setText("🤏" + t["shares"])
+        # Shares button text (localized)
+        try:
+            self.btn_shares.setText("🤏" + t["shares"])
+        except Exception:
+            self.btn_shares.setText("🤏" + t.get("shares", "Shares"))
         self.lbl_fees.setText("💸" + t["fees"])
         self.lbl_stop_pct.setText("🚫" + t["stop_pct"])
         self.lbl_tgt_pct.setText("🎯" + t["tgt_pct"])
@@ -857,6 +1023,36 @@ class TPSLWidget(QWidget):
         self.cmb_side.addItems([t["side_long_lbl"], t["side_short_lbl"]])
         self.cmb_side.setCurrentIndex(0 if was_long else 1)
         self.cmb_side.blockSignals(False)
+
+        # Setup rating label + items (preserve selection)
+        try:
+            idx = self.cmb_setup_rating.currentIndex()
+        except Exception:
+            idx = 0
+        self.cmb_setup_rating.blockSignals(True)
+        self.cmb_setup_rating.clear()
+        self.cmb_setup_rating.addItems(["A+", "A", "B", "C", "D"])
+        idx = max(0, min(idx, self.cmb_setup_rating.count()-1))
+        self.cmb_setup_rating.setCurrentIndex(idx)
+        self.cmb_setup_rating.blockSignals(False)
+        self.lbl_setup_rating.setText("⭐" + t.get("setup_rating", "Setup Rating"))
+
+        # Section label + items (preserve selection)
+        try:
+            s_idx = self.cmb_section.currentIndex()
+        except Exception:
+            s_idx = 0
+        self.cmb_section.blockSignals(True)
+        self.cmb_section.clear()
+        sects = t.get("sections") if isinstance(t.get("sections"), (list, tuple)) else [
+            "Tech", "Financials", "Energy", "Industrials", "Materials", "Consumer",
+            "Healthcare", "Utilities", "Real Estate", "Transportation", "Defense", "Other",
+        ]
+        self.cmb_section.addItems(sects)
+        s_idx = max(0, min(s_idx, self.cmb_section.count()-1))
+        self.cmb_section.setCurrentIndex(s_idx)
+        self.cmb_section.blockSignals(False)
+        self.lbl_section.setText("📂" + t.get("section", "Section"))
 
         self._update_open_label(self.sw_open.isChecked())
 
@@ -932,7 +1128,13 @@ class TPSLWidget(QWidget):
             "ticker": (self.txt_ticker.text().strip() or "-").upper(),
             "side": "Long" if long_side else "Short",
             "entry": entry, "stop": stop_price, "target": tgt_price, "shares": shares,
-            "r": R, "notes": note_txt , "status": status, 
+            "r": R, "notes": note_txt , "status": status,
+            "setup_rating": self.cmb_setup_rating.currentText(),
+            "setup_rating_value": int(self.cmb_setup_rating.currentIndex()),
+            # send canonical English section name for backend/Notion mapping
+            "section": SECTIONS_EN[int(self.cmb_section.currentIndex())] if 0 <= int(self.cmb_section.currentIndex()) < len(SECTIONS_EN) else self.cmb_section.currentText(),
+            "section_display": self.cmb_section.currentText(),
+            "section_value": int(self.cmb_section.currentIndex()),
         }
 
     def push_to_notion_clicked(self):
@@ -1070,6 +1272,21 @@ class TPSLWidget(QWidget):
         self.settings.setValue("compact_mode", self.state.get("compact_mode", False))
         self.settings.setValue("note", self.txt_note.toPlainText())
         self.settings.setValue("note_folded", self.state.get("note_folded", True))
+        # Setup rating (0 = None, 1-5 = rating)
+        try:
+            self.settings.setValue("setup_rating", int(self.cmb_setup_rating.currentIndex()))
+        except Exception:
+            self.settings.setValue("setup_rating", 0)
+        # Section index
+        try:
+            self.settings.setValue("section", int(self.cmb_section.currentIndex()))
+        except Exception:
+            self.settings.setValue("section", 0)
+        # Hand size (shares increment)
+        try:
+            self.settings.setValue("hand_size", int(self.state.get("hand_size", 100)))
+        except Exception:
+            self.settings.setValue("hand_size", 100)
 
 
 
@@ -1143,10 +1360,24 @@ class TPSLWidget(QWidget):
             stop_price, per_risk = self.stop_price_and_risk(entry, stop_pct, long_side, tick)
             tgt_price = self.target_price(entry, tgt_pct, long_side, tick)
 
-            if abs(self.spn_sl_price.value() - stop_price) > 1e-12:
-                self._set_blocked(self.spn_sl_price, self.spn_sl_price.setValue, stop_price)
-            if abs(self.spn_tp_price.value() - tgt_price) > 1e-12:
-                self._set_blocked(self.spn_tp_price, self.spn_tp_price.setValue, tgt_price)
+            # Only push computed prices to the price spinners when the user is
+            # not actively editing them. This allows two-way adjustment: the
+            # user can change the stop/target prices via the spinners and the
+            # percent sliders/labels will update accordingly.
+            try:
+                if not self.spn_sl_price.hasFocus() and abs(self.spn_sl_price.value() - stop_price) > 1e-12:
+                    self._set_blocked(self.spn_sl_price, self.spn_sl_price.setValue, stop_price)
+            except Exception:
+                # conservative fallback: set value if focus check fails
+                if abs(self.spn_sl_price.value() - stop_price) > 1e-12:
+                    self._set_blocked(self.spn_sl_price, self.spn_sl_price.setValue, stop_price)
+
+            try:
+                if not self.spn_tp_price.hasFocus() and abs(self.spn_tp_price.value() - tgt_price) > 1e-12:
+                    self._set_blocked(self.spn_tp_price, self.spn_tp_price.setValue, tgt_price)
+            except Exception:
+                if abs(self.spn_tp_price.value() - tgt_price) > 1e-12:
+                    self._set_blocked(self.spn_tp_price, self.spn_tp_price.setValue, tgt_price)
 
             risk_amt = per_risk * shares
             reward_ps = (tgt_price - entry) if long_side else (entry - tgt_price)
@@ -1224,12 +1455,27 @@ class TPSLWidget(QWidget):
             upl_s    = self._fmt_price(unreal_net, 0, ccy)
             be_s     = self._fmt_price(be_price, p_dec, ccy)
 
+            # Build rating display with stars for the markdown report
+            rating_lbl = (self.cmb_setup_rating.currentText() or "").strip()
+            _rating_to_stars = {"A+": 5, "A": 4, "B": 3, "C": 2, "D": 1}
+            stars = ""
+            try:
+                stars_count = _rating_to_stars.get(rating_lbl.upper(), 0)
+                if stars_count > 0:
+                    stars = " " + ("⭐" * stars_count)
+            except Exception:
+                stars = ""
+
             lines = [
                 md["hdr"].format(title=title_line),
                 "",
                 md["summary"],
                 "",
                 md["ticker_side"].format(ticker=ticker_norm, side=side_md),
+                "",
+                # include section and setup rating (localized display)
+                md.get("section_line", "Section: {section}").format(section=self.cmb_section.currentText()),
+                md.get("rating_line", "Setup rating: {rating}").format(rating=(rating_lbl + stars)),
                 "",
                 md["entry_line"].format(entry=entry_s, curr=curr_s, shares=shares),
                 "",
@@ -1284,6 +1530,18 @@ class TPSLWidget(QWidget):
         expanded = not self.state.get("note_folded", True)
         self.btn_note.setChecked(expanded)
         self._on_note_toggled(expanded)
+
+        # restore setup rating
+        try:
+            self.cmb_setup_rating.setCurrentIndex(int(self.state.get("setup_rating", 0)))
+        except Exception:
+            self.cmb_setup_rating.setCurrentIndex(0)
+
+        # restore section
+        try:
+            self.cmb_section.setCurrentIndex(int(self.state.get("section", 0)))
+        except Exception:
+            self.cmb_section.setCurrentIndex(0)
 
 
         try: _theme(QApplication.instance(), self.state["ui_theme"])

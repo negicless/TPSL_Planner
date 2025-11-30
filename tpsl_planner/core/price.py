@@ -1,12 +1,20 @@
 # tpsl_app/price.py
 from __future__ import annotations
-import time, re
+
+import time
+import re
 from dataclasses import dataclass
+from typing import Optional
 
 try:
     import yfinance as yf
 except Exception:
     yf = None  # we'll error nicely if missing
+
+try:
+    import pandas as pd
+except Exception:
+    pd = None  # only needed for OHLC history
 
 
 @dataclass(slots=True)
@@ -20,14 +28,20 @@ class PriceError(Exception):
     pass
 
 
-# --- tiny in-memory cache (avoid hammering on repeated clicks) ---
+# --- tiny in-memory cache for last price (avoid hammering on repeated clicks) ---
 _TTL = 15  # seconds
 _CACHE: dict[str, PriceResult] = {}
 
 
 # ---------------- symbol helpers ----------------
-# price.py
+
 def normalize_symbol(raw: str) -> str:
+    """
+    Normalize user-facing symbol to something yfinance understands.
+
+    - Strips JP-/US- prefixes
+    - JP numeric codes (4 digits) => append .T
+    """
     s = (raw or "").strip().upper()
     if not s:
         return ""
@@ -39,7 +53,6 @@ def normalize_symbol(raw: str) -> str:
     if re.fullmatch(r"\d{4}", s):
         return s + ".T"
     return s
-
 
 
 def _is_jpx(symbol: str) -> bool:
@@ -54,10 +67,12 @@ def _should_use_prepost(symbol: str) -> bool:
     return not _is_jpx(symbol)
 
 
-# ---------------- fetchers ----------------
+# ---------------- intraday last price fetcher ----------------
+
 def _fetch_yfinance(symbol: str) -> float | None:
     """
     Return the most recent available price.
+
     For US/most non-JPX: include pre/post by using intraday (1m) with prepost=True.
     For JPX (.T): fetch intraday (1m) regular hours only (Yahoo JP has no pre/post).
     """
@@ -97,7 +112,79 @@ def _fetch_yfinance(symbol: str) -> float | None:
         raise PriceError(f"yfinance fetch failed for {symbol}: {e}") from e
 
 
+# ---------------- OHLCV history for levels / charts ----------------
+
+def load_ohlc_for_levels(
+    raw_symbol: str,
+    *,
+    period: str = "60d",
+    interval: str = "30m",
+    prepost: Optional[bool] = None,
+):
+    """
+    Load OHLCV history suitable for mentor-style levels engine.
+
+    - Uses the same normalize_symbol() rules as get_last_price
+    - Defaults to 60 days of 30m bars (good for resampling to W/D/4H/30m)
+    - For JPX (.T): pre/post is forced to False
+    - For non-JPX: pre/post defaults to True unless overridden
+
+    Returns
+    -------
+    pandas.DataFrame with columns:
+        open, high, low, close, volume
+    and DatetimeIndex.
+    """
+    if not yf:
+        raise PriceError("yfinance is not installed. Run: pip install yfinance")
+    if pd is None:
+        raise PriceError("pandas is required for OHLC history. Run: pip install pandas")
+
+    symbol = normalize_symbol(raw_symbol)
+    if not symbol:
+        raise PriceError("Empty ticker for OHLC loader.")
+
+    # Decide pre/post behavior if not explicitly given
+    if prepost is None:
+        prepost = _should_use_prepost(symbol)
+
+    try:
+        df = yf.download(
+            symbol,
+            period=period,
+            interval=interval,
+            prepost=prepost,
+            auto_adjust=False,
+            progress=False,
+        )
+    except Exception as e:
+        raise PriceError(f"yfinance OHLC fetch failed for {symbol}: {e}") from e
+
+    if df is None or df.empty:
+        raise PriceError(f"No OHLC data returned for {symbol} (period={period}, interval={interval})")
+
+    # Normalize columns to what our levels engine expects
+    df = df.rename(
+        columns={
+            "Open": "open",
+            "High": "high",
+            "Low": "low",
+            "Close": "close",
+            "Adj Close": "adj_close",
+            "Volume": "volume",
+        }
+    )
+
+    # Ensure we at least have open/high/low/close
+    for col in ("open", "high", "low", "close"):
+        if col not in df.columns:
+            raise PriceError(f"Missing column '{col}' in OHLC data for {symbol}")
+
+    return df
+
+
 # ---------------- public API ----------------
+
 def get_last_price(raw_symbol: str, use_cache: bool = True) -> PriceResult:
     """
     Normalize -> fetch -> cache.
